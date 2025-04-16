@@ -31,6 +31,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import timm
 from tqdm.auto import tqdm
+from sklearn.metrics import roc_auc_score #added
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.ERROR)
@@ -57,7 +58,7 @@ class CFG:
     submission_csv = os.path.join(DATA_DIR, 'sample_submission.csv')
     taxonomy_csv = os.path.join(DATA_DIR, 'taxonomy.csv')
 
-    CODE_DIR = os.path.join(ROOT_PATH, 'Model') + sep
+    CODE_DIR = os.path.join(ROOT_PATH, 'Code') + sep
     model_path = CODE_DIR
 
     # Audio parameters
@@ -83,7 +84,7 @@ class CFG:
     threshold = 0.5
 
     use_specific_folds = False  # If False, use all found models
-    folds = [0, 1]  # Used only if use_specific_folds is True
+    folds = [0, 4]  # Used only if use_specific_folds is True
 
     debug = False
     debug_count = 3
@@ -252,7 +253,8 @@ def predict_on_spectrogram(audio_path, models, cfg, species_ids):
     soundscape_id = Path(audio_path).stem
 
     try:
-        print(f"Processing {soundscape_id}")
+        # print(f"Processing {soundscape_id}") #commented
+        pass #added
         audio_data, _ = librosa.load(audio_path, sr=cfg.FS)
 
         total_segments = int(len(audio_data) / (cfg.FS * cfg.WINDOW_SIZE))
@@ -387,6 +389,19 @@ def create_submission(row_ids, predictions, species_ids, cfg):
 
     return submission_df
 
+def compute_macro_auc(y_true, y_pred): #added
+    """
+    Compute macro-averaged ROC-AUC score, skipping classes with no positive labels.
+    """
+    aucs = []
+    for i in range(y_true.shape[1]):
+        if np.sum(y_true[:, i]) == 0:
+            continue
+        auc = roc_auc_score(y_true[:, i], y_pred[:, i])
+        aucs.append(auc)
+    return np.mean(aucs) if aucs else 0.0
+
+
 
 # In[8]:
 
@@ -395,6 +410,10 @@ def main():
     start_time = time.time()
     print("Starting BirdCLEF-2025 inference...")
     print(f"TTA enabled: {cfg.use_tta} (variations: {cfg.tta_count if cfg.use_tta else 0})")
+
+    meta_df = pd.read_csv(os.path.join(cfg.DATA_DIR, 'test_metadata.csv'))
+    taxonomy_df = pd.read_csv(cfg.taxonomy_csv)
+    species_ids = taxonomy_df['primary_label'].tolist()
 
     models = load_models(cfg, num_classes)
 
@@ -411,6 +430,27 @@ def main():
     submission_path = 'submission.csv'
     submission_df.to_csv(submission_path, index=False)
     print(f"Submission saved to {submission_path}")
+
+    # ================== Compute ROC-AUC =================== -added
+    print("Computing validation ROC-AUC...")
+
+    # Strip .ogg from filename → to match row_id prefix
+    meta_df['prefix'] = meta_df['filename'].str.replace('.ogg', '', regex=False)
+    prefix_to_label = dict(zip(meta_df['prefix'], meta_df['primary_label']))
+
+    # Create y_true: one-hot encoded ground truth
+    y_true = []
+    for row_id in submission_df['row_id']:
+        prefix = row_id.rsplit('_', 1)[0]  # remove trailing time (_5, _10, etc.)
+        label = prefix_to_label.get(prefix, None)
+        one_hot = [1 if label == sp else 0 for sp in species_ids]
+        y_true.append(one_hot)
+
+    y_true = np.array(y_true)
+    y_pred = submission_df[species_ids].values
+
+    val_auc = compute_macro_auc(y_true, y_pred)
+    print(f"Validation ROC-AUC (macro, skipped empty classes): {val_auc:.4f}")
 
     end_time = time.time()
     print(f"Inference completed in {(end_time - start_time) / 60:.2f} minutes")
