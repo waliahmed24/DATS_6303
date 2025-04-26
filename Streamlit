@@ -1,89 +1,87 @@
 import streamlit as st
-import torch
 import librosa
 import numpy as np
-import pandas as pd
+import torch
 import matplotlib.pyplot as plt
-from io import BytesIO
+from pathlib import Path
 
-st.set_page_config(page_title="Audio Classifier", layout="wide")
+# -------------------------
+# USER CONFIGURATION
+# -------------------------
+MODEL_PATH = Path(__file__).parent / "checkpoints" / "best_model.pth"
+CLASS_MAP = {0: "class_a", 1: "class_b", 2: "class_c", 3: "class_d", 4: "class_e"}  # replace with your labels
+SAMPLE_RATE = 32000
+N_MELS = 128
 
-# Sidebar settings
-st.sidebar.header("Configuration")
-model_path = st.sidebar.text_input("Model checkpoint path", value="./model.pt")
-taxonomy_csv = st.sidebar.text_input("Taxonomy CSV path", value="../Data/taxonomy.csv")
-
-# Caching load functions
-@st.cache_resource
+# -------------------------
+# LOAD MODEL
+# -------------------------
+@st.cache(allow_output_mutation=True)
 def load_model(path):
-    model = torch.load(path, map_location="cpu")
-    model.eval()
-    return model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(path, map_location=device)
+    model = checkpoint['model']  # adjust based on your checkpoint content
+    model.to(device).eval()
+    return model, device
 
-@st.cache_data
-def load_labels(csv_path):
-    df = pd.read_csv(csv_path)
-    # assume display_name column
-    return df['display_name'].tolist()
+# -------------------------
+# FEATURE EXTRACTION
+# -------------------------
+def extract_log_melspec(y, sr, n_mels=N_MELS):
+    mels = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
+    log_mels = librosa.power_to_db(mels)
+    return log_mels
 
-@st.cache_data
-def preprocess_audio(data: BytesIO, sr=32000, n_mels=128, duration=5.0):
-    # load into numpy array
-    y, _ = librosa.load(data, sr=sr, mono=True, duration=duration)
-    # mel-spectrogram
-    mel = librosa.feature.melspectrogram(y, sr=sr, n_mels=n_mels)
-    mel_db = librosa.power_to_db(mel, ref=np.max)
-    # normalize to [0,1]
-    mel_norm = (mel_db - mel_db.min()) / (mel_db.max() - mel_db.min())
-    return mel_norm
+# -------------------------
+# PREDICTION
+# -------------------------
+def predict(audio_tensor, model, device, top_k=5):
+    with torch.no_grad():
+        audio_tensor = audio_tensor.to(device)
+        logits = model(audio_tensor)
+        probs = torch.softmax(logits, dim=-1).cpu().numpy().flatten()
+    top_idx = np.argsort(probs)[::-1][:top_k]
+    return [(CLASS_MAP[i], float(probs[i])) for i in top_idx]
 
-# Load resources
-with st.spinner("Loading model and labels..."):
-    try:
-        model = load_model(model_path)
-        labels = load_labels(taxonomy_csv)
-    except Exception as e:
-        st.error(f"Failed to load model or labels: {e}")
-        st.stop()
+# -------------------------
+# STREAMLIT APP LAYOUT
+# -------------------------
+st.title("🎧 Audio Classification Demo")
+st.markdown("Upload an audio file and get a real-time classification with mel-spectrogram visualization.")
 
-st.title("🎵 Audio Classification Demo")
-col1, col2 = st.columns([1,2])
+# Sidebar controls
+task = st.sidebar.selectbox("Task", ["Upload & Classify"])  
 
-with col1:
-    uploaded = st.file_uploader("Upload an audio file", type=["wav", "mp3", "flac"])
+if task == "Upload & Classify":
+    uploaded_file = st.file_uploader("Choose an audio file", type=["wav", "mp3", "flac"])
+    if uploaded_file:
+        # Playback
+        st.audio(uploaded_file, format='audio/wav')
 
-with col2:
-    if uploaded:
-        # show player
-        st.audio(uploaded)
+        # Load audio
+        y, sr = librosa.load(uploaded_file, sr=SAMPLE_RATE)
 
-if uploaded:
-    # Preprocess
-    with st.spinner("Extracting features..."):
-        audio_buffer = BytesIO(uploaded.read())
-        mel = preprocess_audio(audio_buffer)
-    # Display mel-spectrogram
-    fig, ax = plt.subplots(figsize=(6,3))
-    ax.imshow(mel, aspect='auto', origin='lower')
-    ax.axis('off')
-    st.pyplot(fig)
+        # Visualize spectrogram
+        log_mels = extract_log_melspec(y, sr)
+        fig, ax = plt.subplots(figsize=(8, 3))
+        img = librosa.display.specshow(log_mels, sr=sr, x_axis='time', y_axis='mel', ax=ax)
+        ax.set_title("Log-Mel Spectrogram")
+        fig.colorbar(img, ax=ax, format="%+2.0f dB")
+        st.pyplot(fig)
 
-    # Perform inference
-    with st.spinner("Classifying..."):
-        x = torch.tensor(mel, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-        with torch.no_grad():
-            logits = model(x)
-            probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
-        # top-5
-        top5_idx = probs.argsort()[-5:][::-1]
-        top5 = [(labels[i], float(probs[i])) for i in top5_idx]
+        # Prepare tensor
+        tensor = torch.tensor(log_mels)[None, None, :, :].float()
 
-    # Show results
-    st.subheader("Top-5 Predictions")
-    names = [n for n, p in top5]
-    scores = [p for n, p in top5]
-    result_df = pd.DataFrame({"Label": names, "Probability": scores})
-    st.table(result_df.style.format({"Probability": "{:.2%}"}))
-    # bar chart
-    chart_data = pd.DataFrame({label: score for label, score in top5}, index=[0])
-    st.bar_chart(chart_data)
+        # Load model
+        model, device = load_model(MODEL_PATH)
+
+        # Predict
+        results = predict(tensor, model, device)
+
+        # Display results
+        st.subheader("Top 5 Predictions")
+        labels, scores = zip(*results)
+        df = {'Label': labels, 'Probability': scores}
+        st.table(df)
+        st.bar_chart(data=scores, x=labels)
+
