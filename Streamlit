@@ -1,0 +1,89 @@
+import streamlit as st
+import torch
+import librosa
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from io import BytesIO
+
+st.set_page_config(page_title="Audio Classifier", layout="wide")
+
+# Sidebar settings
+st.sidebar.header("Configuration")
+model_path = st.sidebar.text_input("Model checkpoint path", value="./model.pt")
+taxonomy_csv = st.sidebar.text_input("Taxonomy CSV path", value="../Data/taxonomy.csv")
+
+# Caching load functions
+@st.cache_resource
+def load_model(path):
+    model = torch.load(path, map_location="cpu")
+    model.eval()
+    return model
+
+@st.cache_data
+def load_labels(csv_path):
+    df = pd.read_csv(csv_path)
+    # assume display_name column
+    return df['display_name'].tolist()
+
+@st.cache_data
+def preprocess_audio(data: BytesIO, sr=32000, n_mels=128, duration=5.0):
+    # load into numpy array
+    y, _ = librosa.load(data, sr=sr, mono=True, duration=duration)
+    # mel-spectrogram
+    mel = librosa.feature.melspectrogram(y, sr=sr, n_mels=n_mels)
+    mel_db = librosa.power_to_db(mel, ref=np.max)
+    # normalize to [0,1]
+    mel_norm = (mel_db - mel_db.min()) / (mel_db.max() - mel_db.min())
+    return mel_norm
+
+# Load resources
+with st.spinner("Loading model and labels..."):
+    try:
+        model = load_model(model_path)
+        labels = load_labels(taxonomy_csv)
+    except Exception as e:
+        st.error(f"Failed to load model or labels: {e}")
+        st.stop()
+
+st.title("🎵 Audio Classification Demo")
+col1, col2 = st.columns([1,2])
+
+with col1:
+    uploaded = st.file_uploader("Upload an audio file", type=["wav", "mp3", "flac"])
+
+with col2:
+    if uploaded:
+        # show player
+        st.audio(uploaded)
+
+if uploaded:
+    # Preprocess
+    with st.spinner("Extracting features..."):
+        audio_buffer = BytesIO(uploaded.read())
+        mel = preprocess_audio(audio_buffer)
+    # Display mel-spectrogram
+    fig, ax = plt.subplots(figsize=(6,3))
+    ax.imshow(mel, aspect='auto', origin='lower')
+    ax.axis('off')
+    st.pyplot(fig)
+
+    # Perform inference
+    with st.spinner("Classifying..."):
+        x = torch.tensor(mel, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        with torch.no_grad():
+            logits = model(x)
+            probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
+        # top-5
+        top5_idx = probs.argsort()[-5:][::-1]
+        top5 = [(labels[i], float(probs[i])) for i in top5_idx]
+
+    # Show results
+    st.subheader("Top-5 Predictions")
+    names = [n for n, p in top5]
+    scores = [p for n, p in top5]
+    result_df = pd.DataFrame({"Label": names, "Probability": scores})
+    st.table(result_df.style.format({"Probability": "{:.2%}"}))
+    # bar chart
+    chart_data = pd.DataFrame({label: score for label, score in top5}, index=[0])
+    st.bar_chart(chart_data)
