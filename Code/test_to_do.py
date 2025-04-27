@@ -194,16 +194,18 @@ def process_audio_segment(audio_data, cfg):
 
 def find_model_files(cfg):
     """
-    Find all .pth model files in the specified model directory
+    Find only 'model_best.pth' in the model directory
     """
-    model_files = []
-
     model_dir = Path(cfg.model_path)
 
-    for path in model_dir.glob('**/*.pth'):
-        model_files.append(str(path))
+    model_best_path = model_dir / 'model_best.pth'
 
-    return model_files
+    if model_best_path.exists():
+        return [str(model_best_path)]
+    else:
+        print(f"Warning: model_best.pth not found under {cfg.model_path}!")
+        return []
+
 
 
 def load_models(cfg, num_classes):

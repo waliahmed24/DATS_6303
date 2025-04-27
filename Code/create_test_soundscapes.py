@@ -1,55 +1,62 @@
 import os
 import shutil
-import random
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 # Paths
-train_audio_dir = '../Data/train_audio'
-test_soundscapes_dir = '../Data/test_soundscapes'
-metadata_csv_path = '../Data/test_metadata.csv'
-taxonomy_csv_path = '../Data/taxonomy.csv'
-num_files = 700
+DATA_DIR = '../Data'
+train_audio_dir = os.path.join(DATA_DIR, 'train_audio')
+test_soundscapes_dir = os.path.join(DATA_DIR, 'test_soundscapes')
+train_csv_path = os.path.join(DATA_DIR, 'train.csv')
+train_split_csv_path = os.path.join(DATA_DIR, 'train_split.csv')
+valid_split_csv_path = os.path.join(DATA_DIR, 'valid_split.csv')
+test_metadata_csv_path = os.path.join(DATA_DIR, 'test_metadata.csv')
 
-# Load taxonomy to enrich labels
-taxonomy_df = pd.read_csv(taxonomy_csv_path)
-taxonomy_df = taxonomy_df.set_index('primary_label')  # folder name = primary_label
+# Parameters
+test_size_ratio = 0.2  # 20% validation
+random_seed = 42
 
-# Create test folder
+# Step 1: Load the full train.csv
+print("Loading original train.csv...")
+train_df = pd.read_csv(train_csv_path)
+
+# Step 2: Stratified split into train / valid
+print(f"Splitting into {100*(1-test_size_ratio):.0f}% train and {100*test_size_ratio:.0f}% valid...")
+train_split, valid_split = train_test_split(
+    train_df,
+    test_size=test_size_ratio,
+    stratify=train_df['primary_label'],
+    random_state=random_seed
+)
+
+# Step 3: Save split CSVs
+train_split.to_csv(train_split_csv_path, index=False)
+valid_split.to_csv(valid_split_csv_path, index=False)
+print(f"Saved train_split.csv ({len(train_split)}) and valid_split.csv ({len(valid_split)})")
+
+# Step 4: Move validation audio files to test_soundscapes
+print(f"Copying validation audio files into {test_soundscapes_dir}...")
 os.makedirs(test_soundscapes_dir, exist_ok=True)
 
-# Gather all .ogg files and their labels (primary_label)
-ogg_entries = []
-for root, _, files in os.walk(train_audio_dir):
-    for file in files:
-        if file.endswith('.ogg'):
-            primary_label = os.path.basename(root)
-            full_path = os.path.join(root, file)
-            ogg_entries.append((full_path, primary_label))
-
-# Random sample
-selected = random.sample(ogg_entries, min(num_files, len(ogg_entries)))
-
-# Prepare metadata
 metadata = []
-for idx, (src_path, label) in enumerate(selected, 1):
+for idx, row in valid_split.iterrows():
+    original_file = os.path.join(train_audio_dir, row['filename'])
     new_name = f"soundscape_{idx:06d}.ogg"
-    dest_path = os.path.join(test_soundscapes_dir, new_name)
-    shutil.copy(src_path, dest_path)
+    new_path = os.path.join(test_soundscapes_dir, new_name)
 
-    row = taxonomy_df.loc[label] if label in taxonomy_df.index else {}
-    entry = {
+    if os.path.exists(original_file):
+        shutil.copy(original_file, new_path)
+    else:
+        print(f"Warning: Missing file {original_file}")
+
+    metadata.append({
         'filename': new_name,
-        'primary_label': label
-    }
+        'primary_label': row['primary_label'],
+    })
 
-    # Add extra fields if available
-    for col in ['scientific_name', 'common_name', 'family', 'order']:
-        entry[col] = row[col] if col in taxonomy_df.columns else None
+# Step 5: Save test metadata CSV
+test_meta_df = pd.DataFrame(metadata)
+test_meta_df.to_csv(test_metadata_csv_path, index=False)
+print(f"Saved test_metadata.csv ({len(test_meta_df)} entries)")
 
-    metadata.append(entry)
-
-# Save metadata
-df = pd.DataFrame(metadata)
-df.to_csv(metadata_csv_path, index=False)
-
-print(f"Created {len(df)} test soundscapes and metadata CSV at {metadata_csv_path}")
+print("\nDone! The validation set is now separated into test_soundscapes.")
