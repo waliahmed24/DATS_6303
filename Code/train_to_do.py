@@ -714,6 +714,11 @@ def run_training(df, cfg):
     if cfg.debug:
         cfg.update_debug_settings()
 
+    # Load train/valid splits that are created from the create_test_soundscapes.py
+    train_df = pd.read_csv(cfg.DATA_DIR + 'train_split.csv')
+    valid_df = pd.read_csv(cfg.DATA_DIR + 'valid_split.csv')
+
+    # Load precomputed mel spectrograms
     spectrograms = None
     if cfg.LOAD_DATA:
         print("Loading pre-computed mel spectrograms from NPY file...")
@@ -725,120 +730,102 @@ def run_training(df, cfg):
             print("Will generate spectrograms on-the-fly instead.")
             cfg.LOAD_DATA = False
 
+    # If not loading spectrograms, prepare filepaths
     if not cfg.LOAD_DATA:
-        print("Will generate spectrograms on-the-fly during training.")
-        if 'filepath' not in df.columns:
-            df['filepath'] = cfg.train_datadir + '/' + df.filename
-        if 'samplename' not in df.columns:
-            df['samplename'] = df.filename.map(lambda x: x.split('/')[0] + '-' + x.split('/')[-1].split('.')[0])
+        for split_df in [train_df, valid_df]:
+            if 'filepath' not in split_df.columns:
+                split_df['filepath'] = cfg.train_datadir + '/' + split_df.filename
+            if 'samplename' not in split_df.columns:
+                split_df['samplename'] = split_df.filename.map(
+                    lambda x: x.split('/')[0] + '-' + x.split('/')[-1].split('.')[0])
 
-    skf = StratifiedKFold(n_splits=cfg.n_fold, shuffle=True, random_state=cfg.seed)
+    # Create datasets
+    train_dataset = BirdCLEFDatasetFromNPY(train_df, cfg, spectrograms=spectrograms, mode='train')
+    val_dataset = BirdCLEFDatasetFromNPY(valid_df, cfg, spectrograms=spectrograms, mode='valid')
 
-    best_scores = []
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        collate_fn=collate_fn,
+        drop_last=True
+    )
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df, df['primary_label'])):
-        if fold not in cfg.selected_folds:
-            continue
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        collate_fn=collate_fn
+    )
 
-        print(f'\n{"=" * 30} Fold {fold} {"=" * 30}')
+    model = BirdCLEFModel(cfg).to(cfg.device)
+    optimizer = get_optimizer(model, cfg)
+    criterion = get_criterion(cfg)
 
-        train_df = df.iloc[train_idx].reset_index(drop=True)
-        val_df = df.iloc[val_idx].reset_index(drop=True)
+    if cfg.scheduler == 'OneCycleLR':
+        scheduler = lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=cfg.lr,
+            steps_per_epoch=len(train_loader),
+            epochs=cfg.epochs,
+            pct_start=0.1
+        )
+    else:
+        scheduler = get_scheduler(optimizer, cfg)
 
-        print(f'Training set: {len(train_df)} samples')
-        print(f'Validation set: {len(val_df)} samples')
+    best_auc = 0
+    best_epoch = 0
 
-        train_dataset = BirdCLEFDatasetFromNPY(train_df, cfg, spectrograms=spectrograms, mode='train')
-        val_dataset = BirdCLEFDatasetFromNPY(val_df, cfg, spectrograms=spectrograms, mode='valid')
+    for epoch in range(cfg.epochs):
+        print(f"\nEpoch {epoch + 1}/{cfg.epochs}")
 
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=cfg.batch_size,
-            shuffle=True,
-            num_workers=cfg.num_workers,
-            pin_memory=True,
-            collate_fn=collate_fn,
-            drop_last=True
+        train_loss, train_auc = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            cfg.device,
+            scheduler if isinstance(scheduler, lr_scheduler.OneCycleLR) else None
         )
 
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=cfg.batch_size,
-            shuffle=False,
-            num_workers=cfg.num_workers,
-            pin_memory=True,
-            collate_fn=collate_fn
-        )
+        val_loss, val_auc = validate(model, val_loader, criterion, cfg.device)
 
-        model = BirdCLEFModel(cfg).to(cfg.device)
-        optimizer = get_optimizer(model, cfg)
-        criterion = get_criterion(cfg)
+        if scheduler is not None and not isinstance(scheduler, lr_scheduler.OneCycleLR):
+            if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
 
-        if cfg.scheduler == 'OneCycleLR':
-            scheduler = lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=cfg.lr,
-                steps_per_epoch=len(train_loader),
-                epochs=cfg.epochs,
-                pct_start=0.1
-            )
-        else:
-            scheduler = get_scheduler(optimizer, cfg)
+        print(f"Train Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}")
+        print(f"Val Loss: {val_loss:.4f}, Val AUC: {val_auc:.4f}")
 
-        best_auc = 0
-        best_epoch = 0
+        if val_auc > best_auc:
+            best_auc = val_auc
+            best_epoch = epoch + 1
+            print(f"New best AUC: {best_auc:.4f} at epoch {best_epoch}")
 
-        for epoch in range(cfg.epochs):
-            print(f"\nEpoch {epoch + 1}/{cfg.epochs}")
+            # Save best model
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+                'epoch': epoch,
+                'val_auc': val_auc,
+                'train_auc': train_auc,
+                'cfg': cfg
+            }, f"model_best.pth")
 
-            train_loss, train_auc = train_one_epoch(
-                model,
-                train_loader,
-                optimizer,
-                criterion,
-                cfg.device,
-                scheduler if isinstance(scheduler, lr_scheduler.OneCycleLR) else None
-            )
-
-            val_loss, val_auc = validate(model, val_loader, criterion, cfg.device)
-
-            if scheduler is not None and not isinstance(scheduler, lr_scheduler.OneCycleLR):
-                if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
-                    scheduler.step(val_loss)
-                else:
-                    scheduler.step()
-
-            print(f"Train Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}")
-            print(f"Val Loss: {val_loss:.4f}, Val AUC: {val_auc:.4f}")
-
-            if val_auc > best_auc:
-                best_auc = val_auc
-                best_epoch = epoch + 1
-                print(f"New best AUC: {best_auc:.4f} at epoch {best_epoch}")
-
-                torch.save({
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-                    'epoch': epoch,
-                    'val_auc': val_auc,
-                    'train_auc': train_auc,
-                    'cfg': cfg
-                }, f"model_fold{fold}.pth")
-
-        best_scores.append(best_auc)
-        print(f"\nBest AUC for fold {fold}: {best_auc:.4f} at epoch {best_epoch}")
-
-        # Clear memory
-        del model, optimizer, scheduler, train_loader, val_loader
-        torch.cuda.empty_cache()
-        gc.collect()
+    # Clear memory
+    del model, optimizer, scheduler, train_loader, val_loader
+    torch.cuda.empty_cache()
+    gc.collect()
 
     print("\n" + "=" * 60)
-    print("Cross-Validation Results:")
-    for fold, score in enumerate(best_scores):
-        print(f"Fold {cfg.selected_folds[fold]}: {score:.4f}")
-    print(f"Mean AUC: {np.mean(best_scores):.4f}")
+    print(f"\nBest Validation AUC: {best_auc:.4f} at epoch {best_epoch}")
     print("=" * 60)
 
 
@@ -849,7 +836,7 @@ if __name__ == "__main__":
     import time
 
     print("\nLoading training data...")
-    train_df = pd.read_csv(cfg.train_csv)
+    train_df = pd.read_csv(cfg.DATA_DIR + 'train_split.csv')
     taxonomy_df = pd.read_csv(cfg.taxonomy_csv)
 
     print("\nStarting training...")
