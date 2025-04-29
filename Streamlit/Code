@@ -8,25 +8,60 @@ from pathlib import Path
 # -------------------------
 # USER CONFIGURATION
 # -------------------------
-MODEL_PATH = Path(__file__).parent / "checkpoints" / "best_model.pth"
-CLASS_MAP = {0: "class_a", 1: "class_b", 2: "class_c", 3: "class_d", 4: "class_e"}  # replace with your labels
+# Paths relative to this script
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+MODEL_PATH = PROJECT_ROOT / "Code" / "model_best.pth"
+TAXONOMY_PATH = PROJECT_ROOT / "Data" / "taxonomy.csv"
+CLASS_MAP = None  # will be loaded from taxonomy
 SAMPLE_RATE = 32000
 N_MELS = 128
 
 # -------------------------
 # LOAD MODEL
 # -------------------------
-@st.cache(allow_output_mutation=True)
-def load_model(path):
+@st.cache_resource
+def load_model(path: Path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint = torch.load(path, map_location=device)
-    model = checkpoint['model']  # adjust based on your checkpoint content
+    if not path.exists():
+        return None, device
+    # Attempt weights-only load to avoid unsafe unpickling
+    try:
+        state_dict = torch.load(str(path), map_location=device, weights_only=True)
+    except TypeError:
+        checkpoint = torch.load(str(path), map_location=device)
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+    except RuntimeError:
+        checkpoint = torch.load(str(path), map_location=device, weights_only=False)
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+    # Build a placeholder model to load state dict sizes
+    # We'll infer number of classes from taxonomy
+    tax = load_taxonomy(TAXONOMY_PATH)
+    num_classes = len(tax)
+    model = torch.hub.load('rwightman/gen-efficientnet-pytorch', 'efficientnet_b0', pretrained=False)
+    # replace classifier
+    in_features = model.classifier.in_features
+    model.classifier = torch.nn.Linear(in_features, num_classes)
+    model.load_state_dict(state_dict)
     model.to(device).eval()
     return model, device
 
 # -------------------------
+# LOAD TAXONOMY
+# -------------------------
+@st.cache_data
+def load_taxonomy(path: Path):
+    if not path.exists():
+        return []
+    import pandas as pd
+    df = pd.read_csv(path)
+    return df['primary_label'].tolist()
+
+# -------------------------
 # FEATURE EXTRACTION
 # -------------------------
+from librosa.display import specshow
+
 def extract_log_melspec(y, sr, n_mels=N_MELS):
     mels = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
     log_mels = librosa.power_to_db(mels)
@@ -40,48 +75,47 @@ def predict(audio_tensor, model, device, top_k=5):
         audio_tensor = audio_tensor.to(device)
         logits = model(audio_tensor)
         probs = torch.softmax(logits, dim=-1).cpu().numpy().flatten()
-    top_idx = np.argsort(probs)[::-1][:top_k]
-    return [(CLASS_MAP[i], float(probs[i])) for i in top_idx]
+    idx = np.argsort(probs)[::-1][:top_k]
+    labels = CLASS_MAP
+    return [(labels[i], float(probs[i])) for i in idx]
 
 # -------------------------
 # STREAMLIT APP LAYOUT
 # -------------------------
 st.title("🎧 Audio Classification Demo")
-st.markdown("Upload an audio file and get a real-time classification with mel-spectrogram visualization.")
+st.markdown("Upload an audio file and get classification with mel-spectrogram.")
 
-# Sidebar controls
-task = st.sidebar.selectbox("Task", ["Upload & Classify"])  
+# Load taxonomy
+CLASS_MAP = load_taxonomy(TAXONOMY_PATH)
 
-if task == "Upload & Classify":
-    uploaded_file = st.file_uploader("Choose an audio file", type=["wav", "mp3", "flac"])
-    if uploaded_file:
-        # Playback
-        st.audio(uploaded_file, format='audio/wav')
+# Load model
+model, device = load_model(MODEL_PATH)
+if model is None:
+    st.error(f"Model checkpoint not found: {MODEL_PATH}")
+    st.stop()
 
-        # Load audio
-        y, sr = librosa.load(uploaded_file, sr=SAMPLE_RATE)
+# Sidebar
+top_k = st.sidebar.slider("Top K", 1, 10, 5)
 
-        # Visualize spectrogram
-        log_mels = extract_log_melspec(y, sr)
-        fig, ax = plt.subplots(figsize=(8, 3))
-        img = librosa.display.specshow(log_mels, sr=sr, x_axis='time', y_axis='mel', ax=ax)
-        ax.set_title("Log-Mel Spectrogram")
-        fig.colorbar(img, ax=ax, format="%+2.0f dB")
-        st.pyplot(fig)
-
-        # Prepare tensor
-        tensor = torch.tensor(log_mels)[None, None, :, :].float()
-
-        # Load model
-        model, device = load_model(MODEL_PATH)
-
-        # Predict
-        results = predict(tensor, model, device)
-
-        # Display results
-        st.subheader("Top 5 Predictions")
-        labels, scores = zip(*results)
-        df = {'Label': labels, 'Probability': scores}
-        st.table(df)
-        st.bar_chart(data=scores, x=labels)
-
+# File upload
+uploaded = st.file_uploader("Choose audio file", type=["wav","mp3","flac"])
+if uploaded:
+    # Playback
+    st.audio(uploaded, format='audio/wav')
+    # Load
+    y, sr = librosa.load(uploaded, sr=SAMPLE_RATE)
+    # Display spectrogram
+    log_mels = extract_log_melspec(y, sr)
+    fig, ax = plt.subplots(figsize=(8,3))
+    img = specshow(log_mels, sr=sr, x_axis='time', y_axis='mel', ax=ax)
+    ax.set_title("Log-Mel Spectrogram")
+    fig.colorbar(img, ax=ax, format="%+2.0f dB")
+    st.pyplot(fig)
+    # Prepare tensor
+    tensor = torch.tensor(log_mels)[None,None,:,:].float()
+    # Predict
+    results = predict(tensor, model, device, top_k)
+    # Show
+    st.subheader("Top Predictions")
+    for label, prob in results:
+        st.write(f"**{label}** — {prob:.3f}")
