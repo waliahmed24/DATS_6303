@@ -13,7 +13,7 @@ Follow the instructions below to set up and run the project on your machine.
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/your-repo-name.git
+git clone https://github.com/waliahmed24/Final_Project_Group6.git
 ```
 
 ### 2. Navigate to The Project Directory
