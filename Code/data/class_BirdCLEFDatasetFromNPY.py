@@ -1,3 +1,13 @@
+import pandas as pd
+import numpy as np
+import torch
+import random
+from utils.utils_preprocessing import process_audio_file
+from torch.utils.data import Dataset
+import librosa
+
+
+
 class BirdCLEFDatasetFromNPY(Dataset):
     """
     PyTorch Dataset class for BirdCLEF 2025 audio classification using precomputed spectrograms.

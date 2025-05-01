@@ -1,3 +1,9 @@
+import os
+import numpy as np
+import librosa
+import pandas as pd
+
+
 def audio2melspec(audio_data, cfg):
     """Convert audio data to mel spectrogram"""
 

@@ -1,3 +1,9 @@
+import os
+import random
+import numpy as np
+import torch
+
+
 def set_seed(seed=42):
     """
     Set seed for reproducibility
@@ -11,5 +17,4 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-set_seed(cfg.seed)
 

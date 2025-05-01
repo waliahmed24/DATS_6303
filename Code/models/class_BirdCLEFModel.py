@@ -1,3 +1,11 @@
+import torch
+import torch.nn as nn
+import pandas as pd
+import torchvision.models as models
+
+import timm
+
+
 class BirdCLEFModel(nn.Module):
     """
     Neural network model for BirdCLEF classification using a timm backbone and optional mixup augmentation.

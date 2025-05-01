@@ -1,3 +1,19 @@
+# util_run_training.py
+import gc
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import DataLoader
+from sklearn.model_selection import StratifiedKFold
+from torch.optim import lr_scheduler
+
+from data.class_BirdCLEFDatasetFromNPY import BirdCLEFDatasetFromNPY
+from models.class_BirdCLEFModel import BirdCLEFModel
+from models.utils_model_definition import get_optimizer, get_criterion, get_scheduler
+from train.util_collate_fn import collate_fn
+from train.utils_training_loop import train_one_epoch, validate
+
+
 def run_training(df, cfg):
     """Training function that can either use pre-computed spectrograms or generate them on-the-fly"""
 
