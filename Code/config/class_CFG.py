@@ -8,16 +8,6 @@ class CFG:
     print_freq = 100
     num_workers = 2
 
-    # OUTPUT_DIR = '/kaggle/working/'
-    #
-    # train_datadir = '/kaggle/input/birdclef-2025/train_audio'
-    # train_csv = '/kaggle/input/birdclef-2025/train.csv'
-    # test_soundscapes = '/kaggle/input/birdclef-2025/test_soundscapes'
-    # submission_csv = '/kaggle/input/birdclef-2025/sample_submission.csv'
-    # taxonomy_csv = '/kaggle/input/birdclef-2025/taxonomy.csv'
-    #
-    # spectrogram_npy = '/kaggle/input/birdclef25-mel-spectrograms/birdclef2025_melspec_5sec_256_256.npy'
-
     # Save current working directory and go one level up to project root
     OR_PATH = os.getcwd()
     os.chdir("..")
@@ -80,4 +70,3 @@ class CFG:
         if self.debug:
             self.epochs = 2
             self.selected_folds = [0]
-
