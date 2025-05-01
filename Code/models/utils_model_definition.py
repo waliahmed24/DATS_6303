@@ -1,3 +1,12 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.optim import Adam, AdamW
+from torch.optim import lr_scheduler
+from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau, OneCycleLR
+from config.class_CFG import CFG
+
+
 def get_optimizer(model, cfg):
     """
         Create and return an optimizer for the given model based on the configuration.
