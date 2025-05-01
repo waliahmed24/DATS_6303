@@ -1,9 +1,0 @@
-mkdir -p "/home/ubuntu/DL Final Project/Data" \
-  && pipx run gdown --id 1KVKCkWMa0XsY1ETH3pBt05DCMbYNMsnF -O dataset.zip \
-  && unzip -o dataset.zip -d "/home/ubuntu/DL Final Project/Data"
-
-
-# download your model into the Code/ folder
-mkdir -p ~/DL\ Final\ Project/Code \
-  && pipx run gdown --id 1hyipRTt8zNlZSrj_QzaQOLExllwN2ptZ \
-     -O ~/DL\ Final\ Project/Code/model_best.pth
