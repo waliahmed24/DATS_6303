@@ -1,0 +1,7 @@
+timm
+opencv-python
+pandas
+librosa
+matplotlib
+seaborn
+
