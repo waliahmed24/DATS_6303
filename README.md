@@ -63,7 +63,7 @@ python3 main.py
 This would run training and validation and once done will save the best model based on the validation set accuracy.
 
 
-### Refer to the project Directory structure below within the Code folder:
+### Refer to the project directory structure below within the Code folder:
 
 <img width="490" alt="Screenshot 2025-05-01 at 3 16 48 PM" src="https://github.com/user-attachments/assets/83444649-47a8-4d64-be02-6203ad3d48cd" />
 
